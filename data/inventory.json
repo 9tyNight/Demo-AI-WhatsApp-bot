@@ -1,0 +1,50 @@
+[
+  {
+    "product_id": "SKU-1001",
+    "name": "Organic Arabica Coffee Beans 1kg",
+    "stock_level": 18,
+    "price": 24.90,
+    "location_in_store": "Aisle 2, Coffee & Tea",
+    "active_promotions": ["Buy 2 get 10% off", "Free mug for purchases over $50"]
+  },
+  {
+    "product_id": "SKU-1002",
+    "name": "French Press 1L",
+    "stock_level": 6,
+    "price": 19.50,
+    "location_in_store": "Aisle 2, Brewing Equipment",
+    "active_promotions": ["15% off this week"]
+  },
+  {
+    "product_id": "SKU-2001",
+    "name": "Bluetooth Speaker Mini",
+    "stock_level": 0,
+    "price": 39.99,
+    "location_in_store": "Aisle 5, Electronics",
+    "active_promotions": []
+  },
+  {
+    "product_id": "SKU-2002",
+    "name": "USB-C Fast Charger 30W",
+    "stock_level": 42,
+    "price": 14.99,
+    "location_in_store": "Aisle 5, Mobile Accessories",
+    "active_promotions": ["Bundle with cable for $19.99"]
+  },
+  {
+    "product_id": "SKU-3001",
+    "name": "Yoga Mat Premium 6mm",
+    "stock_level": 9,
+    "price": 29.00,
+    "location_in_store": "Aisle 8, Fitness",
+    "active_promotions": ["Member price $24.00"]
+  },
+  {
+    "product_id": "SKU-4001",
+    "name": "Kids Water Bottle 500ml",
+    "stock_level": 31,
+    "price": 8.75,
+    "location_in_store": "Aisle 1, Household",
+    "active_promotions": ["Buy 3 pay for 2"]
+  }
+]
