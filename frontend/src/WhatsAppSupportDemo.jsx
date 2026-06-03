@@ -8,6 +8,8 @@ import {
   MessageCircle,
   Send,
   ShieldCheck,
+  ToggleLeft,
+  ToggleRight,
   UserRound,
 } from "lucide-react";
 
@@ -66,6 +68,7 @@ function formatTime(date) {
 export default function WhatsAppSupportDemo() {
   const [messages, setMessages] = useState(initialMessages);
   const [input, setInput] = useState("");
+  const [localSimulationMode, setLocalSimulationMode] = useState(false);
   const [events, setEvents] = useState([
     {
       id: "boot",
@@ -86,6 +89,12 @@ export default function WhatsAppSupportDemo() {
   }, [messages]);
 
   useEffect(() => {
+    if (localSimulationMode) {
+      setApiOnline(false);
+      addEvent("[SIMULATION MODE] Backend fetch disabled", "success");
+      return undefined;
+    }
+
     let ignore = false;
 
     async function checkHealth() {
@@ -111,7 +120,7 @@ export default function WhatsAppSupportDemo() {
     return () => {
       ignore = true;
     };
-  }, []);
+  }, [localSimulationMode]);
 
   function addEvent(text, type = "tool") {
     setEvents((current) => [
@@ -141,6 +150,61 @@ export default function WhatsAppSupportDemo() {
     setInput("");
     setIsSending(true);
     addEvent(`[CHAT EVENT] User message posted: ${JSON.stringify(userText)}`, "status");
+
+    if (localSimulationMode) {
+      window.setTimeout(() => {
+        const lowerText = userText.toLowerCase();
+        const needsHuman = lowerText.includes("angry") || lowerText.includes("human");
+        const asksFrenchPress = lowerText.includes("french press");
+
+        if (needsHuman) {
+          addEvent("[EVENT TRIGGERED] human_handoff()", "handoff");
+          addEvent("[HANDOFF] AI paused: Human agent paged", "handoff");
+          setHandoffActive(true);
+          setMessages((current) => [
+            ...current,
+            {
+              id: crypto.randomUUID(),
+              role: "bot",
+              text: "I will connect you with a store team member now.",
+              timestamp: new Date(),
+            },
+          ]);
+          setIsSending(false);
+          return;
+        }
+
+        if (asksFrenchPress) {
+          addEvent('[TOOL EXECUTED] search_inventory(query="French press")', "tool");
+          setMessages((current) => [
+            ...current,
+            {
+              id: crypto.randomUUID(),
+              role: "bot",
+              text:
+                "Yes, we have the French Press 1L in stock. There are 6 units available for $19.50, located in Aisle 2, Brewing Equipment. Promo: 15% off this week.",
+              timestamp: new Date(),
+            },
+          ]);
+          setIsSending(false);
+          return;
+        }
+
+        addEvent('[TOOL EXECUTED] search_inventory(query="general product search")', "tool");
+        setMessages((current) => [
+          ...current,
+          {
+            id: crypto.randomUUID(),
+            role: "bot",
+            text:
+              "Simulation mode is running locally. Try asking about French press stock, or type angry/human to trigger handoff.",
+            timestamp: new Date(),
+          },
+        ]);
+        setIsSending(false);
+      }, 700);
+      return;
+    }
 
     try {
       const response = await fetch(`${API_BASE_URL}/chat`, {
@@ -209,11 +273,11 @@ export default function WhatsAppSupportDemo() {
     }
 
     return {
-      label: "Checking backend",
+      label: localSimulationMode ? "Local simulation" : "Checking backend",
       className: "bg-slate-100 text-slate-700 ring-slate-200",
-      icon: Loader2,
+      icon: localSimulationMode ? ToggleRight : Loader2,
     };
-  }, [apiOnline, handoffActive]);
+  }, [apiOnline, handoffActive, localSimulationMode]);
 
   const StatusIcon = statusPill.icon;
 
@@ -301,15 +365,40 @@ export default function WhatsAppSupportDemo() {
         </section>
 
         <aside className="min-h-[720px] rounded-lg border border-slate-200 bg-white shadow-sm">
-          <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
+          <div className="flex flex-col gap-4 border-b border-slate-200 px-5 py-4 md:flex-row md:items-center md:justify-between">
             <div>
               <h2 className="text-base font-semibold">Developer Debug Panel</h2>
               <p className="mt-1 text-sm text-slate-500">Live tool calls, API status, and handoff events</p>
             </div>
-            <span className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-medium ring-1 ${statusPill.className}`}>
-              <StatusIcon className={`h-3.5 w-3.5 ${StatusIcon === Loader2 ? "animate-spin" : ""}`} />
-              {statusPill.label}
-            </span>
+            <div className="flex flex-wrap items-center gap-3">
+              <label className="inline-flex cursor-pointer items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-medium text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={localSimulationMode}
+                  onChange={(event) => {
+                    setLocalSimulationMode(event.target.checked);
+                    setHandoffActive(false);
+                    addEvent(
+                      event.target.checked
+                        ? "[SIMULATION MODE] Local frontend responses enabled"
+                        : "[SIMULATION MODE] Backend API responses enabled",
+                      "status",
+                    );
+                  }}
+                  className="sr-only"
+                />
+                {localSimulationMode ? (
+                  <ToggleRight className="h-5 w-5 text-emerald-600" />
+                ) : (
+                  <ToggleLeft className="h-5 w-5 text-slate-400" />
+                )}
+                Local Simulation Mode
+              </label>
+              <span className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-medium ring-1 ${statusPill.className}`}>
+                <StatusIcon className={`h-3.5 w-3.5 ${StatusIcon === Loader2 ? "animate-spin" : ""}`} />
+                {statusPill.label}
+              </span>
+            </div>
           </div>
 
           <div className="grid gap-4 p-5 md:grid-cols-3">
@@ -318,7 +407,7 @@ export default function WhatsAppSupportDemo() {
                 <Database className="h-4 w-4 text-emerald-600" />
                 Backend
               </div>
-              <p className="mt-2 text-sm text-slate-500">{API_BASE_URL}</p>
+              <p className="mt-2 text-sm text-slate-500">{localSimulationMode ? "Local browser state" : API_BASE_URL}</p>
             </div>
             <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
               <div className="text-sm font-medium text-slate-700">Messages</div>
