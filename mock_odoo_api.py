@@ -3,10 +3,25 @@ from typing import Optional
 import json
 
 from fastapi import FastAPI, Query
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+
+from ai_agent import run_agent
 
 app = FastAPI(title="Mock Odoo Inventory API", version="0.1.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 DATA_PATH = Path(__file__).parent / "data" / "inventory.json"
+
+
+class ChatRequest(BaseModel):
+    message: str
 
 
 def load_inventory() -> list[dict]:
@@ -17,6 +32,16 @@ def load_inventory() -> list[dict]:
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok", "service": "mock-odoo-api"}
+
+
+@app.post("/chat")
+def chat(request: ChatRequest) -> dict:
+    result = run_agent(request.message)
+    return {
+        "reply": result.reply,
+        "human_handoff": result.human_handoff,
+        "tool_calls": result.tool_calls,
+    }
 
 
 @app.get("/products")
