@@ -1,7 +1,6 @@
-import json
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import requests
@@ -10,8 +9,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 ODOO_API_BASE_URL = os.getenv("ODOO_API_BASE_URL", "http://127.0.0.1:8000")
-USE_OPENAI = os.getenv("USE_OPENAI", "0") == "1"
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
 FRUSTRATION_WORDS = {
     "angry",
@@ -29,6 +27,19 @@ FRUSTRATION_WORDS = {
     "unhappy",
 }
 
+SYSTEM_INSTRUCTION = """
+You are a concise WhatsApp customer support bot for a physical retail store.
+
+Rules:
+- For stock, price, location, product, SKU, availability, or promotion questions,
+  call search_inventory before answering.
+- Never invent product data. Use only tool results for inventory facts.
+- Prices are in USD. Format prices with the $ symbol.
+- If a customer is frustrated, repeats a complaint, or asks for a human, call
+  human_handoff immediately and do not continue trying to solve the issue.
+- Keep replies friendly, short, and suitable for WhatsApp.
+""".strip()
+
 
 @dataclass
 class AgentResult:
@@ -37,27 +48,55 @@ class AgentResult:
     tool_calls: list[dict[str, Any]]
 
 
-def search_inventory(query: str, in_stock_only: bool = False, promotion_only: bool = False) -> dict:
+@dataclass
+class ToolTrace:
+    calls: list[dict[str, Any]] = field(default_factory=list)
+
+    def add(self, name: str, arguments: dict[str, Any], output: dict[str, Any]) -> None:
+        self.calls.append({"name": name, "arguments": arguments, "output": output})
+
+    def drain(self) -> list[dict[str, Any]]:
+        calls = self.calls[:]
+        self.calls.clear()
+        return calls
+
+
+TOOL_TRACE = ToolTrace()
+
+
+def search_inventory(query: str) -> dict:
+    """Search store inventory by product name, SKU, department, location, stock, or promotion."""
     response = requests.get(
         f"{ODOO_API_BASE_URL}/products",
-        params={
-            "q": query,
-            "in_stock_only": in_stock_only,
-            "promotion_only": promotion_only,
-        },
+        params={"q": query},
         timeout=10,
     )
     response.raise_for_status()
-    return response.json()
+    result = response.json()
+    normalized_query = extract_search_query(query)
+    if result.get("count") == 0 and normalized_query != query:
+        response = requests.get(
+            f"{ODOO_API_BASE_URL}/products",
+            params={"q": normalized_query},
+            timeout=10,
+        )
+        response.raise_for_status()
+        result = response.json()
+
+    TOOL_TRACE.add("search_inventory", {"query": query, "normalized_query": normalized_query}, result)
+    return result
 
 
 def human_handoff(reason: str) -> dict:
-    return {
+    """Escalate the customer to a human store support agent and pause the AI session."""
+    result = {
         "human_handoff": True,
         "reason": reason,
         "queue": "store_support",
         "message": "I will connect you with a store team member now.",
     }
+    TOOL_TRACE.add("human_handoff", {"reason": reason}, result)
+    return result
 
 
 def should_handoff(message: str) -> bool:
@@ -81,7 +120,7 @@ def extract_search_query(message: str) -> str:
     return cleaned or message
 
 
-def format_inventory_reply(products: list[dict], original_message: str) -> str:
+def format_inventory_reply(products: list[dict]) -> str:
     if not products:
         return (
             "I could not find a matching item in the store inventory. "
@@ -98,137 +137,101 @@ def format_inventory_reply(products: list[dict], original_message: str) -> str:
             f"{product['location_in_store']}. Promo: {promos}."
         )
 
-    intro = "Here is what I found in inventory:"
     if len(products) > 3:
         lines.append(f"...and {len(products) - 3} more result(s).")
-    return intro + "\n" + "\n".join(lines)
+    return "Here is what I found in inventory:\n" + "\n".join(lines)
 
 
 def run_local_agent(message: str) -> AgentResult:
     if should_handoff(message):
         result = human_handoff("Customer requested a person or showed frustration.")
-        return AgentResult(
-            reply=result["message"],
-            human_handoff=True,
-            tool_calls=[{"name": "human_handoff", "arguments": {"reason": result["reason"]}}],
-        )
+        return AgentResult(reply=result["message"], human_handoff=True, tool_calls=TOOL_TRACE.drain())
 
-    query = extract_search_query(message)
-    wants_promo = "promo" in message.casefold() or "discount" in message.casefold() or "deal" in message.casefold()
-    wants_stock = "stock" in message.casefold() or "available" in message.casefold() or "have" in message.casefold()
-    inventory = search_inventory(query=query, in_stock_only=wants_stock, promotion_only=wants_promo)
-    if wants_stock and not inventory["products"]:
-        inventory = search_inventory(query=query, in_stock_only=False, promotion_only=wants_promo)
-
+    inventory = search_inventory(extract_search_query(message))
     return AgentResult(
-        reply=format_inventory_reply(inventory["products"], message),
+        reply=format_inventory_reply(inventory["products"]),
         human_handoff=False,
-        tool_calls=[
-            {
-                "name": "search_inventory",
-                "arguments": {
-                    "query": query,
-                    "in_stock_only": wants_stock,
-                    "promotion_only": wants_promo,
-                },
-            }
-        ],
+        tool_calls=TOOL_TRACE.drain(),
     )
 
 
-TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "search_inventory",
-            "description": "Search the store inventory from the mock Odoo API.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "Product, category, SKU, or store location to search."},
-                    "in_stock_only": {"type": "boolean"},
-                    "promotion_only": {"type": "boolean"},
-                },
-                "required": ["query", "in_stock_only", "promotion_only"],
-                "additionalProperties": False,
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "human_handoff",
-            "description": "Escalate the conversation to a human support agent.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "reason": {"type": "string", "description": "Why the customer needs a human."}
-                },
-                "required": ["reason"],
-                "additionalProperties": False,
-            },
-        },
-    },
-]
+class GeminiSupportAgent:
+    def __init__(self) -> None:
+        api_key = os.environ.get("GEMINI_API_KEY")
+        if not api_key:
+            raise RuntimeError("GEMINI_API_KEY is not set.")
 
+        from google import genai
+        from google.genai import types
 
-def run_openai_agent(message: str) -> AgentResult:
-    from openai import OpenAI
-
-    client = OpenAI()
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "You are a WhatsApp support bot for a physical retail store. "
-                "Use tools for inventory facts. If the user asks for a human or sounds frustrated, "
-                "call human_handoff. Be concise and friendly."
+        self.client = genai.Client(api_key=api_key)
+        self.chat = self.client.chats.create(
+            model=GEMINI_MODEL,
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM_INSTRUCTION,
+                temperature=0.2,
+                tools=[search_inventory, human_handoff],
             ),
-        },
-        {"role": "user", "content": message},
-    ]
+        )
+        self.paused_for_handoff = False
 
-    first = client.chat.completions.create(
-        model=OPENAI_MODEL,
-        messages=messages,
-        tools=TOOLS,
-        tool_choice="auto",
-    )
-    assistant_message = first.choices[0].message
-    tool_calls = assistant_message.tool_calls or []
+    def send(self, message: str) -> AgentResult:
+        if self.paused_for_handoff:
+            return AgentResult(
+                reply="A human agent is taking over this conversation now.",
+                human_handoff=True,
+                tool_calls=[],
+            )
 
-    if not tool_calls:
-        return AgentResult(reply=assistant_message.content or "", human_handoff=False, tool_calls=[])
+        if should_handoff(message):
+            result = human_handoff("Customer requested a person or showed frustration.")
+            self.paused_for_handoff = True
+            return AgentResult(reply=result["message"], human_handoff=True, tool_calls=TOOL_TRACE.drain())
 
-    messages.append(assistant_message)
-    executed_calls: list[dict[str, Any]] = []
-    handoff = False
+        try:
+            response = self.chat.send_message(message)
+        except Exception as exc:
+            TOOL_TRACE.drain()
+            fallback = run_local_agent(message)
+            fallback.reply = (
+                f"{fallback.reply}\n\n"
+                "Note: Gemini is temporarily unavailable, so I used the local inventory fallback."
+            )
+            fallback.tool_calls.append(
+                {
+                    "name": "gemini_error",
+                    "arguments": {"model": GEMINI_MODEL},
+                    "output": {"error": str(exc)},
+                }
+            )
+            return fallback
 
-    for call in tool_calls:
-        args = json.loads(call.function.arguments or "{}")
-        if call.function.name == "search_inventory":
-            output = search_inventory(**args)
-        elif call.function.name == "human_handoff":
-            output = human_handoff(**args)
-            handoff = True
-        else:
-            output = {"error": f"Unknown tool {call.function.name}"}
+        tool_calls = TOOL_TRACE.drain()
+        handoff = any(call["name"] == "human_handoff" for call in tool_calls)
+        if handoff:
+            self.paused_for_handoff = True
 
-        executed_calls.append({"name": call.function.name, "arguments": args, "output": output})
-        messages.append(
-            {
-                "role": "tool",
-                "tool_call_id": call.id,
-                "content": json.dumps(output),
-            }
+        return AgentResult(
+            reply=response.text or "I will connect you with a store team member now.",
+            human_handoff=handoff,
+            tool_calls=tool_calls,
         )
 
-    second = client.chat.completions.create(model=OPENAI_MODEL, messages=messages)
-    reply = second.choices[0].message.content or "I will connect you with a store team member now."
-    return AgentResult(reply=reply, human_handoff=handoff, tool_calls=executed_calls)
+    def history(self) -> list[Any]:
+        return self.chat.get_history()
+
+
+_GEMINI_AGENT: GeminiSupportAgent | None = None
+
+
+def get_gemini_agent() -> GeminiSupportAgent:
+    global _GEMINI_AGENT
+    if _GEMINI_AGENT is None:
+        _GEMINI_AGENT = GeminiSupportAgent()
+    return _GEMINI_AGENT
 
 
 def run_agent(message: str) -> AgentResult:
-    if USE_OPENAI and os.getenv("OPENAI_API_KEY"):
-        return run_openai_agent(message)
+    if os.environ.get("GEMINI_API_KEY"):
+        return get_gemini_agent().send(message)
     return run_local_agent(message)
