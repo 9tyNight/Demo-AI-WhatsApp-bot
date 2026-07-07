@@ -2,10 +2,15 @@
 
 This is a local, self-contained prototype for a physical-store WhatsApp support bot.
 
+Live demo: https://zingy-sundae-29b89f.netlify.app/
+
 It demonstrates:
 
 - Mock Odoo inventory API.
+- WhatsApp-style conversation beside a mock Odoo inventory response.
 - AI agent tool calls for inventory lookup.
+- Fallback behavior when a SKU is missing.
+- Order status, inventory, and product promotion examples.
 - Human handoff detection for frustrated customers or explicit escalation requests.
 - CLI chat simulation that stands in for WhatsApp/Twilio during a fast client demo.
 

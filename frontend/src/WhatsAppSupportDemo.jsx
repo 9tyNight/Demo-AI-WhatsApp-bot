@@ -13,8 +13,6 @@ import {
   UserRound,
 } from "lucide-react";
 
-const API_BASE_URL = "http://127.0.0.1:8000";
-
 const initialMessages = [
   {
     id: "welcome",
@@ -23,6 +21,21 @@ const initialMessages = [
     timestamp: new Date(),
   },
 ];
+
+const demoPrompts = [
+  "Do you have French press in stock?",
+  "What is the status for order SO-1042?",
+  "Do you have SKU MISSING-404?",
+];
+
+const mockOdooRecords = [
+  ["French Press 1L", "6 units", "$19.50", "Aisle 2"],
+  ["Bluetooth Speaker", "12 units", "$49.00", "Aisle 5"],
+  ["SKU MISSING-404", "0 units", "Not found", "Fallback"],
+];
+
+const USE_LIVE_BACKEND = import.meta.env.VITE_USE_LIVE_BACKEND === "true";
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "Mock Odoo API";
 
 function getResponseText(payload) {
   return (
@@ -68,18 +81,18 @@ function formatTime(date) {
 export default function WhatsAppSupportDemo() {
   const [messages, setMessages] = useState(initialMessages);
   const [input, setInput] = useState("");
-  const [localSimulationMode, setLocalSimulationMode] = useState(false);
+  const [localSimulationMode, setLocalSimulationMode] = useState(!USE_LIVE_BACKEND);
   const [events, setEvents] = useState([
     {
       id: "boot",
       type: "status",
-      text: "[API STATUS] Waiting for Mock Odoo ERP connection",
+      text: "[API STATUS] Mock Odoo ERP online for portfolio demo",
       timestamp: new Date(),
     },
   ]);
   const [isSending, setIsSending] = useState(false);
   const [handoffActive, setHandoffActive] = useState(false);
-  const [apiOnline, setApiOnline] = useState(false);
+  const [apiOnline, setApiOnline] = useState(true);
   const bottomRef = useRef(null);
 
   const canSend = input.trim().length > 0 && !isSending && !handoffActive;
@@ -90,8 +103,8 @@ export default function WhatsAppSupportDemo() {
 
   useEffect(() => {
     if (localSimulationMode) {
-      setApiOnline(false);
-      addEvent("[SIMULATION MODE] Backend fetch disabled", "success");
+      setApiOnline(true);
+      addEvent("[SIMULATION MODE] Mock Odoo responses enabled", "success");
       return undefined;
     }
 
@@ -111,7 +124,8 @@ export default function WhatsAppSupportDemo() {
       } catch (error) {
         if (!ignore) {
           setApiOnline(false);
-          addEvent(`[API STATUS] Backend unavailable: ${error.message}`, "error");
+          addEvent(`[API STATUS] Live backend check failed; demo remains in mock mode`, "status");
+          setLocalSimulationMode(true);
         }
       }
     }
@@ -156,6 +170,8 @@ export default function WhatsAppSupportDemo() {
         const lowerText = userText.toLowerCase();
         const needsHuman = lowerText.includes("angry") || lowerText.includes("human");
         const asksFrenchPress = lowerText.includes("french press");
+        const asksOrder = lowerText.includes("order") || lowerText.includes("so-1042");
+        const asksMissingSku = lowerText.includes("missing") || lowerText.includes("sku");
 
         if (needsHuman) {
           addEvent("[EVENT TRIGGERED] human_handoff()", "handoff");
@@ -190,6 +206,37 @@ export default function WhatsAppSupportDemo() {
           return;
         }
 
+        if (asksOrder) {
+          addEvent('[TOOL EXECUTED] search_order_status(order_ref="SO-1042")', "tool");
+          setMessages((current) => [
+            ...current,
+            {
+              id: crypto.randomUUID(),
+              role: "bot",
+              text: "Order SO-1042 is packed and waiting for courier pickup. Estimated delivery is tomorrow afternoon.",
+              timestamp: new Date(),
+            },
+          ]);
+          setIsSending(false);
+          return;
+        }
+
+        if (asksMissingSku) {
+          addEvent('[TOOL EXECUTED] search_inventory(query="SKU MISSING-404")', "tool");
+          addEvent("[FALLBACK] SKU not found: suggested human stock check", "handoff");
+          setMessages((current) => [
+            ...current,
+            {
+              id: crypto.randomUUID(),
+              role: "bot",
+              text: "I could not find that SKU in Odoo inventory. I can check a similar product name, or connect you to a store agent for a manual stock check.",
+              timestamp: new Date(),
+            },
+          ]);
+          setIsSending(false);
+          return;
+        }
+
         addEvent('[TOOL EXECUTED] search_inventory(query="general product search")', "tool");
         setMessages((current) => [
           ...current,
@@ -207,6 +254,10 @@ export default function WhatsAppSupportDemo() {
     }
 
     try {
+      if (!USE_LIVE_BACKEND) {
+        throw new Error("Live backend disabled for hosted portfolio demo");
+      }
+
       const response = await fetch(`${API_BASE_URL}/chat`, {
         method: "POST",
         headers: {
@@ -240,13 +291,13 @@ export default function WhatsAppSupportDemo() {
         },
       ]);
     } catch (error) {
-      addEvent(`[API ERROR] ${error.message}`, "error");
+      addEvent(`[API STATUS] Switched to mock Odoo response flow`, "status");
       setMessages((current) => [
         ...current,
         {
           id: crypto.randomUUID(),
           role: "bot",
-          text: "I could not reach the support backend. Please confirm FastAPI is running at http://127.0.0.1:8000.",
+          text: "The hosted portfolio demo is running in mock Odoo mode. Try the French press, order SO-1042, or missing SKU examples to see inventory lookup, order status, and fallback behavior.",
           timestamp: new Date(),
         },
       ]);
@@ -273,9 +324,11 @@ export default function WhatsAppSupportDemo() {
     }
 
     return {
-      label: localSimulationMode ? "Local simulation" : "Checking backend",
-      className: "bg-slate-100 text-slate-700 ring-slate-200",
-      icon: localSimulationMode ? ToggleRight : Loader2,
+      label: localSimulationMode ? "Mock Odoo online" : "Checking backend",
+      className: localSimulationMode
+        ? "bg-emerald-100 text-emerald-800 ring-emerald-200"
+        : "bg-slate-100 text-slate-700 ring-slate-200",
+      icon: localSimulationMode ? CheckCircle2 : Loader2,
     };
   }, [apiOnline, handoffActive, localSimulationMode]);
 
@@ -360,6 +413,19 @@ export default function WhatsAppSupportDemo() {
                   <Send className="h-5 w-5" />
                 </button>
               </form>
+              <div className="grid gap-2 border-t border-black/5 bg-[#f0f2f5] px-3 pb-3 sm:grid-cols-3">
+                {demoPrompts.map((prompt) => (
+                  <button
+                    className="rounded-full bg-white px-3 py-2 text-left text-[11px] font-semibold text-slate-700 shadow-sm"
+                    key={prompt}
+                    type="button"
+                    onClick={() => setInput(prompt)}
+                    disabled={handoffActive}
+                  >
+                    {prompt}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
         </section>
@@ -367,8 +433,8 @@ export default function WhatsAppSupportDemo() {
         <aside className="min-h-[720px] rounded-lg border border-slate-200 bg-white shadow-sm">
           <div className="flex flex-col gap-4 border-b border-slate-200 px-5 py-4 md:flex-row md:items-center md:justify-between">
             <div>
-              <h2 className="text-base font-semibold">Developer Debug Panel</h2>
-              <p className="mt-1 text-sm text-slate-500">Live tool calls, API status, and handoff events</p>
+              <h2 className="text-base font-semibold">Automation Trace</h2>
+              <p className="mt-1 text-sm text-slate-500">Mock Odoo lookups, API-style events, and human handoff logic</p>
             </div>
             <div className="flex flex-wrap items-center gap-3">
               <label className="inline-flex cursor-pointer items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-medium text-slate-700">
@@ -392,7 +458,7 @@ export default function WhatsAppSupportDemo() {
                 ) : (
                   <ToggleLeft className="h-5 w-5 text-slate-400" />
                 )}
-                Local Simulation Mode
+                Mock Demo Mode
               </label>
               <span className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-medium ring-1 ${statusPill.className}`}>
                 <StatusIcon className={`h-3.5 w-3.5 ${StatusIcon === Loader2 ? "animate-spin" : ""}`} />
@@ -407,7 +473,9 @@ export default function WhatsAppSupportDemo() {
                 <Database className="h-4 w-4 text-emerald-600" />
                 Backend
               </div>
-              <p className="mt-2 text-sm text-slate-500">{localSimulationMode ? "Local browser state" : API_BASE_URL}</p>
+              <p className="mt-2 text-sm text-slate-500">
+                {localSimulationMode ? "Mock Odoo API online" : API_BASE_URL}
+              </p>
             </div>
             <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
               <div className="text-sm font-medium text-slate-700">Messages</div>
@@ -416,6 +484,19 @@ export default function WhatsAppSupportDemo() {
             <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
               <div className="text-sm font-medium text-slate-700">Tool Events</div>
               <p className="mt-2 text-2xl font-semibold">{events.filter((event) => event.type === "tool").length}</p>
+            </div>
+          </div>
+
+          <div className="mx-5 mb-5 rounded-lg border border-slate-200 bg-slate-50 p-4">
+            <div className="mb-3 text-sm font-semibold text-slate-700">Mock Odoo inventory response</div>
+            <div className="grid gap-2 md:grid-cols-3">
+              {mockOdooRecords.map(([name, stock, price, location]) => (
+                <div className="rounded-lg border border-slate-200 bg-white p-3 text-sm" key={name}>
+                  <strong className="block text-slate-900">{name}</strong>
+                  <span className="mt-1 block text-slate-500">{stock} / {price}</span>
+                  <span className="mt-1 block text-xs font-semibold text-emerald-700">{location}</span>
+                </div>
+              ))}
             </div>
           </div>
 
